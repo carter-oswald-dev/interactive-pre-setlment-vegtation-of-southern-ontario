@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -66,7 +67,7 @@
   }
 
   #map {
-    height: 380px;
+    height: 420px;
     margin-top: 1rem;
     border-radius: 8px;
   }
@@ -74,6 +75,46 @@
   .credit {
     font-size: 0.75rem;
     color: #888;
+  }
+
+  /* Coverage information box */
+  #coverageBox {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: #eef6ed;
+    border: 1px solid #b8d8b5;
+    border-radius: 8px;
+  }
+
+  #coverageBox h2 {
+    margin-top: 0;
+    font-size: 1.05rem;
+  }
+
+  #coverageBox p {
+    margin-bottom: 0.5rem;
+  }
+
+  .coverageLegend {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+  }
+
+  .coverageSwatch {
+    width: 18px;
+    height: 18px;
+    background: rgba(60, 150, 70, 0.25);
+    border: 2px solid #2d7d32;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  .coverageNote {
+    color: #666;
+    font-size: 0.85rem;
   }
 </style>
 </head>
@@ -92,10 +133,10 @@
     id="address"
     placeholder="e.g. Stratford, ON or 43.37, -80.98"
   />
-  <button onclick="lookup()">Search</button>
+  <button id="searchButton" onclick="lookup()">Search</button>
 </div>
 
-<div id="status"></div>
+<div id="status">Loading landcover data...</div>
 
 <div id="result">
   <h2 id="resultName"></h2>
@@ -103,6 +144,25 @@
   <p id="resultDesc"></p>
   <img id="resultImg" style="display:none;"/>
   <p class="credit" id="resultCredit"></p>
+</div>
+
+<div id="coverageBox">
+  <h2>Data Coverage</h2>
+
+  <p id="coverageStatus">
+    Loading coverage information...
+  </p>
+
+  <div class="coverageLegend">
+    <div class="coverageSwatch"></div>
+    <span>Historical landcover data available</span>
+  </div>
+
+  <p class="coverageNote">
+    Unknown and unsurveyed areas are excluded from the coverage.
+    If an area with no data is surrounded by usable data, it remains
+    a cut-out in the coverage boundary.
+  </p>
 </div>
 
 <div id="map"></div>
@@ -115,46 +175,213 @@
 
 const map = L.map('map').setView([43.4, -80.9], 8);
 
-// CARTO Voyager basemap
-// This avoids directly using the OpenStreetMap tile server.
-L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-  attribution:
-    '&copy; OpenStreetMap contributors &copy; CARTO',
-  subdomains: 'abcd',
-  maxZoom: 20
-}).addTo(map);
+// CARTO Voyager basemap.
+// This avoids directly requesting tiles from the OSM tile server.
+L.tileLayer(
+  'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+  {
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+    subdomains: 'abcd',
+    maxZoom: 20
+  }
+).addTo(map);
 
 let marker = null;
 
+// Layer containing the actual usable-data coverage.
+let coverageLayer = null;
+
 
 // ============================================================
-// LOAD LANDCOVER DATA ONCE
+// LANDCOVER DATA
 // ============================================================
 
 let landcover = null;
 
-const statusEl = document.getElementById('status');
+const statusEl =
+  document.getElementById('status');
 
-statusEl.textContent = 'Loading landcover data...';
+const coverageStatusEl =
+  document.getElementById('coverageStatus');
+
+const searchButton =
+  document.getElementById('searchButton');
+
+
+// Disable searching until data has loaded.
+searchButton.disabled = true;
+
+
+// ============================================================
+// TCODES THAT DO NOT COUNT AS USABLE DATA
+// ============================================================
+
+const excludedTCodes = new Set([
+  0,    // Unknown
+  102,  // Unsurveyed
+  103   // Unknown
+]);
+
+
+// ============================================================
+// LOAD LANDCOVER DATA
+// ============================================================
 
 fetch('landcover.geojson')
-  .then(r => {
-    if (!r.ok) {
-      throw new Error('Could not load landcover.geojson');
+  .then(response => {
+
+    if (!response.ok) {
+      throw new Error(
+        `Could not load landcover.geojson (${response.status})`
+      );
     }
 
-    return r.json();
+    return response.json();
   })
+
   .then(data => {
+
     landcover = data;
 
     statusEl.textContent =
       `Ready — ${data.features.length.toLocaleString()} polygons loaded.`;
+
+    searchButton.disabled = false;
+
+    buildCoverageLayer();
+
   })
+
   .catch(err => {
+
     statusEl.textContent =
       'Error loading landcover data: ' + err.message;
+
+    coverageStatusEl.textContent =
+      'Could not load coverage information.';
+
+    searchButton.disabled = true;
+
   });
+
+
+// ============================================================
+// BUILD COVERAGE LAYER
+// ============================================================
+//
+// This uses only polygons whose TCODE is NOT:
+//   0   Unknown
+//   102 Unsurveyed
+//   103 Unknown
+//
+// Because the actual polygons are used, areas surrounded by
+// excluded polygons can remain as holes/cut-outs.
+//
+// ============================================================
+
+function buildCoverageLayer() {
+
+  if (!landcover || !landcover.features) {
+    return;
+  }
+
+  coverageStatusEl.textContent =
+    'Building coverage boundary...';
+
+  try {
+
+    const usableFeatures =
+      landcover.features.filter(feature => {
+
+        if (
+          !feature.properties ||
+          feature.properties.TCODE === undefined ||
+          feature.properties.TCODE === null
+        ) {
+          return false;
+        }
+
+        const tcode =
+          Number(feature.properties.TCODE);
+
+        return !excludedTCodes.has(tcode);
+      });
+
+
+    if (usableFeatures.length === 0) {
+
+      coverageStatusEl.textContent =
+        'No usable landcover polygons were found.';
+
+      return;
+    }
+
+
+    // Create a FeatureCollection from the usable polygons.
+    const usableCollection =
+      turf.featureCollection(usableFeatures);
+
+
+    // Dissolve adjacent polygons into larger coverage areas.
+    //
+    // If Turf cannot dissolve the complete dataset because it is
+    // extremely large, we fall back to displaying the polygons
+    // individually.
+    let dissolved = null;
+
+    try {
+
+      dissolved =
+        turf.dissolve(usableCollection);
+
+    } catch (dissolveError) {
+
+      console.warn(
+        'Coverage dissolve failed; displaying usable polygons individually.',
+        dissolveError
+      );
+
+      dissolved = usableCollection;
+    }
+
+
+    // Create the Leaflet coverage layer.
+    coverageLayer =
+      L.geoJSON(dissolved, {
+
+        style: {
+          color: '#2d7d32',
+          weight: 2,
+          opacity: 0.9,
+          fillColor: '#4caf50',
+          fillOpacity: 0.18
+        },
+
+        interactive: false
+
+      }).addTo(map);
+
+
+    // Do not automatically zoom the user into the coverage.
+    // Keep the original Southern Ontario view.
+
+    coverageStatusEl.textContent =
+      `${usableFeatures.length.toLocaleString()} usable landcover polygons. ` +
+      `Unknown and unsurveyed areas excluded.`;
+
+  }
+
+  catch (error) {
+
+    console.error(
+      'Could not build coverage layer:',
+      error
+    );
+
+    coverageStatusEl.textContent =
+      'Coverage boundary could not be generated, but landcover lookup is still available.';
+  }
+}
 
 
 // ============================================================
@@ -397,7 +624,7 @@ const tcodeInfo = {
 
 
 // ============================================================
-// SEARCH / LOOKUP LOGIC
+// SEARCH / LOOKUP
 // ============================================================
 
 async function lookup() {
@@ -405,11 +632,25 @@ async function lookup() {
   const input =
     document.getElementById('address').value.trim();
 
-  if (!input) return;
+  if (!input) {
+    return;
+  }
 
-  document.getElementById('result').style.display = 'none';
+  if (!landcover) {
 
-  statusEl.textContent = 'Searching...';
+    statusEl.textContent =
+      'Landcover data is still loading — please wait.';
+
+    return;
+  }
+
+
+  document.getElementById('result').style.display =
+    'none';
+
+  statusEl.textContent =
+    'Searching...';
+
 
   let lat;
   let lon;
@@ -422,18 +663,24 @@ async function lookup() {
   const coordPattern =
     /^(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)$/;
 
-  const match = input.match(coordPattern);
+  const match =
+    input.match(coordPattern);
 
 
   if (match) {
 
-    lat = parseFloat(match[1]);
-    lon = parseFloat(match[2]);
+    lat =
+      parseFloat(match[1]);
 
-  } else {
+    lon =
+      parseFloat(match[2]);
+
+  }
+
+  else {
 
     // --------------------------------------------------------
-    // ADDRESS LOOKUP USING NOMINATIM
+    // ADDRESS LOOKUP
     // --------------------------------------------------------
 
     try {
@@ -441,15 +688,19 @@ async function lookup() {
       const url =
         `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(input)}&format=json&limit=1&countrycodes=ca`;
 
-      const response = await fetch(url);
+      const response =
+        await fetch(url);
 
       if (!response.ok) {
+
         throw new Error(
-          `Nominatim request failed (${response.status})`
+          `Address lookup failed (${response.status})`
         );
       }
 
-      const data = await response.json();
+      const data =
+        await response.json();
+
 
       if (!data.length) {
 
@@ -459,10 +710,16 @@ async function lookup() {
         return;
       }
 
-      lat = parseFloat(data[0].lat);
-      lon = parseFloat(data[0].lon);
 
-    } catch (err) {
+      lat =
+        parseFloat(data[0].lat);
+
+      lon =
+        parseFloat(data[0].lon);
+
+    }
+
+    catch (err) {
 
       statusEl.textContent =
         'Error looking up address: ' + err.message;
@@ -476,26 +733,20 @@ async function lookup() {
   // UPDATE MAP
   // ----------------------------------------------------------
 
-  map.setView([lat, lon], 12);
+  map.setView(
+    [lat, lon],
+    12
+  );
+
 
   if (marker) {
     map.removeLayer(marker);
   }
 
-  marker = L.marker([lat, lon]).addTo(map);
 
-
-  // ----------------------------------------------------------
-  // CHECK LANDCOVER DATA
-  // ----------------------------------------------------------
-
-  if (!landcover) {
-
-    statusEl.textContent =
-      'Landcover data is still loading — try again in a moment.';
-
-    return;
-  }
+  marker =
+    L.marker([lat, lon])
+      .addTo(map);
 
 
   // ----------------------------------------------------------
@@ -505,7 +756,8 @@ async function lookup() {
   const point =
     turf.point([lon, lat]);
 
-  let found = null;
+  let found =
+    null;
 
 
   for (const feature of landcover.features) {
@@ -519,13 +771,17 @@ async function lookup() {
         )
       ) {
 
-        found = feature.properties;
+        found =
+          feature.properties;
+
         break;
       }
 
-    } catch (e) {
+    }
 
-      // Skip malformed geometries silently
+    catch (e) {
+
+      // Ignore malformed geometries.
       continue;
     }
   }
@@ -557,11 +813,13 @@ async function lookup() {
   if (found) {
 
     const tcode =
-      found.TCODE;
+      Number(found.TCODE);
+
 
     const info =
       tcodeInfo[tcode] || {
-        name: found.TCode_Name || 'Unknown',
+        name:
+          found.TCode_Name || 'Unknown',
         desc: ''
       };
 
@@ -569,8 +827,10 @@ async function lookup() {
     nameEl.textContent =
       info.name;
 
+
     codeEl.textContent =
       `TCODE: ${tcode}`;
+
 
     descEl.textContent =
       info.desc || '';
@@ -587,7 +847,9 @@ async function lookup() {
       creditEl.textContent =
         info.credit || '';
 
-    } else {
+    }
+
+    else {
 
       imgEl.style.display =
         'none';
@@ -600,10 +862,13 @@ async function lookup() {
     resultDiv.style.display =
       'block';
 
+
     statusEl.textContent =
       '';
 
-  } else {
+  }
+
+  else {
 
     statusEl.textContent =
       'No pre-settlement landcover data found for this location (it may be outside the mapped area).';
@@ -617,15 +882,19 @@ async function lookup() {
 
 document
   .getElementById('address')
-  .addEventListener('keydown', function(e) {
+  .addEventListener(
+    'keydown',
+    function(e) {
 
-    if (e.key === 'Enter') {
-      lookup();
+      if (e.key === 'Enter') {
+        lookup();
+      }
+
     }
-
-  });
+  );
 
 </script>
 
 </body>
 </html>
+```
