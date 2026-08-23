@@ -1,4 +1,3 @@
-```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -42,6 +41,11 @@
     cursor: pointer;
   }
 
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
   #status {
     color: #666;
     font-size: 0.9rem;
@@ -77,13 +81,14 @@
     color: #888;
   }
 
-  /* Coverage information box */
+  /* Data coverage information box */
   #coverageBox {
     margin-top: 1rem;
     padding: 1rem;
     background: #eef6ed;
     border: 1px solid #b8d8b5;
     border-radius: 8px;
+    display: none;
   }
 
   #coverageBox h2 {
@@ -92,14 +97,14 @@
   }
 
   #coverageBox p {
-    margin-bottom: 0.5rem;
+    margin: 0.5rem 0;
   }
 
   .coverageLegend {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    margin-top: 0.5rem;
+    margin-top: 0.75rem;
     font-size: 0.9rem;
   }
 
@@ -115,6 +120,32 @@
   .coverageNote {
     color: #666;
     font-size: 0.85rem;
+  }
+
+  /* Leaflet coverage control */
+  .coverage-control {
+    background: white;
+    padding: 8px 10px;
+    border-radius: 5px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.35);
+    font-size: 14px;
+  }
+
+  .coverage-control label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .coverage-control input {
+    cursor: pointer;
+  }
+
+  .coverage-control-title {
+    font-weight: 600;
+    margin-bottom: 5px;
   }
 </style>
 </head>
@@ -133,10 +164,14 @@
     id="address"
     placeholder="e.g. Stratford, ON or 43.37, -80.98"
   />
-  <button id="searchButton" onclick="lookup()">Search</button>
+  <button id="searchButton" onclick="lookup()" disabled>
+    Search
+  </button>
 </div>
 
-<div id="status">Loading landcover data...</div>
+<div id="status">
+  Loading landcover data...
+</div>
 
 <div id="result">
   <h2 id="resultName"></h2>
@@ -146,7 +181,9 @@
   <p class="credit" id="resultCredit"></p>
 </div>
 
+<!-- Coverage information box -->
 <div id="coverageBox">
+
   <h2>Data Coverage</h2>
 
   <p id="coverageStatus">
@@ -159,10 +196,10 @@
   </div>
 
   <p class="coverageNote">
-    Unknown and unsurveyed areas are excluded from the coverage.
-    If an area with no data is surrounded by usable data, it remains
-    a cut-out in the coverage boundary.
+    Unknown and unsurveyed areas are excluded.
+    Areas without data remain as gaps in the coverage.
   </p>
+
 </div>
 
 <div id="map"></div>
@@ -176,7 +213,7 @@
 const map = L.map('map').setView([43.4, -80.9], 8);
 
 // CARTO Voyager basemap.
-// This avoids directly requesting tiles from the OSM tile server.
+// This avoids directly using the OSM tile server.
 L.tileLayer(
   'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
   {
@@ -188,38 +225,50 @@ L.tileLayer(
 
 let marker = null;
 
-// Layer containing the actual usable-data coverage.
+
+// ============================================================
+// COVERAGE LAYER
+// ============================================================
+
 let coverageLayer = null;
 
+let coverageReady = false;
+
 
 // ============================================================
-// LANDCOVER DATA
+// DOM ELEMENTS
 // ============================================================
-
-let landcover = null;
 
 const statusEl =
   document.getElementById('status');
 
-const coverageStatusEl =
+const coverageBox =
+  document.getElementById('coverageBox');
+
+const coverageStatus =
   document.getElementById('coverageStatus');
 
 const searchButton =
   document.getElementById('searchButton');
 
 
-// Disable searching until data has loaded.
-searchButton.disabled = true;
-
-
 // ============================================================
-// TCODES THAT DO NOT COUNT AS USABLE DATA
+// TCODES THAT ARE EXCLUDED FROM COVERAGE
+// ============================================================
+//
+// These do NOT count as usable historical landcover data.
+//
+// 0   = Unknown
+// 102 = Unsurveyed
+// 103 = Unknown
+//
+// Everything else is treated as usable data.
 // ============================================================
 
 const excludedTCodes = new Set([
-  0,    // Unknown
-  102,  // Unsurveyed
-  103   // Unknown
+  0,
+  102,
+  103
 ]);
 
 
@@ -227,7 +276,10 @@ const excludedTCodes = new Set([
 // LOAD LANDCOVER DATA
 // ============================================================
 
+let landcover = null;
+
 fetch('landcover.geojson')
+
   .then(response => {
 
     if (!response.ok) {
@@ -248,19 +300,20 @@ fetch('landcover.geojson')
 
     searchButton.disabled = false;
 
+    // Build coverage without dissolving the entire dataset.
     buildCoverageLayer();
 
   })
 
-  .catch(err => {
+  .catch(error => {
+
+    console.error(error);
 
     statusEl.textContent =
-      'Error loading landcover data: ' + err.message;
+      'Error loading landcover data: ' + error.message;
 
-    coverageStatusEl.textContent =
-      'Could not load coverage information.';
-
-    searchButton.disabled = true;
+    coverageStatus.textContent =
+      'Coverage information could not be loaded.';
 
   });
 
@@ -269,13 +322,15 @@ fetch('landcover.geojson')
 // BUILD COVERAGE LAYER
 // ============================================================
 //
-// This uses only polygons whose TCODE is NOT:
-//   0   Unknown
-//   102 Unsurveyed
-//   103 Unknown
+// IMPORTANT:
 //
-// Because the actual polygons are used, areas surrounded by
-// excluded polygons can remain as holes/cut-outs.
+// We do NOT use turf.dissolve() here.
+//
+// Every usable polygon is simply placed into a Leaflet layer.
+// This is much safer for a large 8 MB GeoJSON file.
+//
+// Since polygons with TCODE 0, 102 and 103 are not included,
+// areas represented by those polygons remain empty.
 //
 // ============================================================
 
@@ -285,102 +340,200 @@ function buildCoverageLayer() {
     return;
   }
 
-  coverageStatusEl.textContent =
-    'Building coverage boundary...';
-
-  try {
-
-    const usableFeatures =
-      landcover.features.filter(feature => {
-
-        if (
-          !feature.properties ||
-          feature.properties.TCODE === undefined ||
-          feature.properties.TCODE === null
-        ) {
-          return false;
-        }
-
-        const tcode =
-          Number(feature.properties.TCODE);
-
-        return !excludedTCodes.has(tcode);
-      });
+  coverageStatus.textContent =
+    'Preparing coverage...';
 
 
-    if (usableFeatures.length === 0) {
+  // Create a FeatureCollection containing only usable polygons.
 
-      coverageStatusEl.textContent =
-        'No usable landcover polygons were found.';
+  const usableFeatures =
+    landcover.features.filter(feature => {
 
-      return;
-    }
+      if (!feature.properties) {
+        return false;
+      }
 
+      const rawTCODE =
+        feature.properties.TCODE;
 
-    // Create a FeatureCollection from the usable polygons.
-    const usableCollection =
-      turf.featureCollection(usableFeatures);
+      if (
+        rawTCODE === undefined ||
+        rawTCODE === null ||
+        rawTCODE === ''
+      ) {
+        return false;
+      }
 
+      const tcode =
+        Number(rawTCODE);
 
-    // Dissolve adjacent polygons into larger coverage areas.
-    //
-    // If Turf cannot dissolve the complete dataset because it is
-    // extremely large, we fall back to displaying the polygons
-    // individually.
-    let dissolved = null;
-
-    try {
-
-      dissolved =
-        turf.dissolve(usableCollection);
-
-    } catch (dissolveError) {
-
-      console.warn(
-        'Coverage dissolve failed; displaying usable polygons individually.',
-        dissolveError
-      );
-
-      dissolved = usableCollection;
-    }
+      return !excludedTCodes.has(tcode);
+    });
 
 
-    // Create the Leaflet coverage layer.
-    coverageLayer =
-      L.geoJSON(dissolved, {
+  // Create the Leaflet coverage layer.
+
+  coverageLayer =
+    L.geoJSON(
+      {
+        type: 'FeatureCollection',
+        features: usableFeatures
+      },
+      {
 
         style: {
           color: '#2d7d32',
-          weight: 2,
-          opacity: 0.9,
+          weight: 1,
+          opacity: 0.65,
           fillColor: '#4caf50',
           fillOpacity: 0.18
         },
 
         interactive: false
 
-      }).addTo(map);
-
-
-    // Do not automatically zoom the user into the coverage.
-    // Keep the original Southern Ontario view.
-
-    coverageStatusEl.textContent =
-      `${usableFeatures.length.toLocaleString()} usable landcover polygons. ` +
-      `Unknown and unsurveyed areas excluded.`;
-
-  }
-
-  catch (error) {
-
-    console.error(
-      'Could not build coverage layer:',
-      error
+      }
     );
 
-    coverageStatusEl.textContent =
-      'Coverage boundary could not be generated, but landcover lookup is still available.';
+
+  coverageReady = true;
+
+
+  coverageStatus.textContent =
+    `${usableFeatures.length.toLocaleString()} polygons contain usable historical landcover data.`;
+
+
+  // Add the coverage control to the map.
+
+  addCoverageControl();
+
+}
+
+
+// ============================================================
+// COVERAGE CONTROL
+// ============================================================
+
+function addCoverageControl() {
+
+  const CoverageControl =
+    L.Control.extend({
+
+      options: {
+        position: 'topright'
+      },
+
+      onAdd: function(map) {
+
+        const container =
+          L.DomUtil.create(
+            'div',
+            'coverage-control'
+          );
+
+
+        container.innerHTML = `
+
+          <div class="coverage-control-title">
+            Data Coverage
+          </div>
+
+          <label>
+            <input
+              type="checkbox"
+              id="coverageCheckbox"
+            >
+            Show coverage
+          </label>
+
+        `;
+
+
+        // Prevent clicks inside the control from
+        // interacting with the map.
+
+        L.DomEvent.disableClickPropagation(container);
+
+
+        const checkbox =
+          container.querySelector(
+            '#coverageCheckbox'
+          );
+
+
+        checkbox.addEventListener(
+          'change',
+          function() {
+
+            if (!coverageReady) {
+
+              checkbox.checked = false;
+
+              return;
+            }
+
+
+            if (checkbox.checked) {
+
+              showCoverage();
+
+            } else {
+
+              hideCoverage();
+
+            }
+
+          }
+        );
+
+
+        return container;
+      }
+
+    });
+
+
+  map.addControl(
+    new CoverageControl()
+  );
+
+}
+
+
+// ============================================================
+// SHOW COVERAGE
+// ============================================================
+
+function showCoverage() {
+
+  if (!coverageLayer) {
+    return;
   }
+
+  coverageLayer.addTo(map);
+
+  coverageBox.style.display =
+    'block';
+
+}
+
+
+// ============================================================
+// HIDE COVERAGE
+// ============================================================
+
+function hideCoverage() {
+
+  if (!coverageLayer) {
+    return;
+  }
+
+  if (map.hasLayer(coverageLayer)) {
+    map.removeLayer(coverageLayer);
+  }
+
+  coverageBox.style.display =
+    'none';
+
 }
 
 
@@ -624,17 +777,21 @@ const tcodeInfo = {
 
 
 // ============================================================
-// SEARCH / LOOKUP
+// LOOKUP FUNCTION
 // ============================================================
 
 async function lookup() {
 
   const input =
-    document.getElementById('address').value.trim();
+    document.getElementById('address')
+      .value
+      .trim();
+
 
   if (!input) {
     return;
   }
+
 
   if (!landcover) {
 
@@ -645,8 +802,8 @@ async function lookup() {
   }
 
 
-  document.getElementById('result').style.display =
-    'none';
+  document.getElementById('result')
+    .style.display = 'none';
 
   statusEl.textContent =
     'Searching...';
@@ -657,7 +814,7 @@ async function lookup() {
 
 
   // ----------------------------------------------------------
-  // CHECK FOR COORDINATES
+  // COORDINATE INPUT
   // ----------------------------------------------------------
 
   const coordPattern =
@@ -680,7 +837,7 @@ async function lookup() {
   else {
 
     // --------------------------------------------------------
-    // ADDRESS LOOKUP
+    // ADDRESS SEARCH
     // --------------------------------------------------------
 
     try {
@@ -688,15 +845,19 @@ async function lookup() {
       const url =
         `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(input)}&format=json&limit=1&countrycodes=ca`;
 
+
       const response =
         await fetch(url);
+
 
       if (!response.ok) {
 
         throw new Error(
           `Address lookup failed (${response.status})`
         );
+
       }
+
 
       const data =
         await response.json();
@@ -719,13 +880,15 @@ async function lookup() {
 
     }
 
-    catch (err) {
+    catch (error) {
 
       statusEl.textContent =
-        'Error looking up address: ' + err.message;
+        'Error looking up address: ' +
+        error.message;
 
       return;
     }
+
   }
 
 
@@ -745,22 +908,29 @@ async function lookup() {
 
 
   marker =
-    L.marker([lat, lon])
-      .addTo(map);
+    L.marker(
+      [lat, lon]
+    ).addTo(map);
 
 
   // ----------------------------------------------------------
-  // POINT-IN-POLYGON LOOKUP
+  // POINT-IN-POLYGON
   // ----------------------------------------------------------
 
   const point =
-    turf.point([lon, lat]);
+    turf.point(
+      [lon, lat]
+    );
+
 
   let found =
     null;
 
 
-  for (const feature of landcover.features) {
+  for (
+    const feature
+    of landcover.features
+  ) {
 
     try {
 
@@ -779,11 +949,13 @@ async function lookup() {
 
     }
 
-    catch (e) {
+    catch (error) {
 
       // Ignore malformed geometries.
       continue;
+
     }
+
   }
 
 
@@ -818,9 +990,13 @@ async function lookup() {
 
     const info =
       tcodeInfo[tcode] || {
+
         name:
-          found.TCode_Name || 'Unknown',
+          found.TCode_Name ||
+          'Unknown',
+
         desc: ''
+
       };
 
 
@@ -833,7 +1009,8 @@ async function lookup() {
 
 
     descEl.textContent =
-      info.desc || '';
+      info.desc ||
+      '';
 
 
     if (info.photo) {
@@ -845,7 +1022,8 @@ async function lookup() {
         'block';
 
       creditEl.textContent =
-        info.credit || '';
+        info.credit ||
+        '';
 
     }
 
@@ -856,6 +1034,7 @@ async function lookup() {
 
       creditEl.textContent =
         '';
+
     }
 
 
@@ -872,21 +1051,23 @@ async function lookup() {
 
     statusEl.textContent =
       'No pre-settlement landcover data found for this location (it may be outside the mapped area).';
+
   }
+
 }
 
 
 // ============================================================
-// ENTER KEY SUPPORT
+// ENTER KEY
 // ============================================================
 
 document
   .getElementById('address')
   .addEventListener(
     'keydown',
-    function(e) {
+    function(event) {
 
-      if (e.key === 'Enter') {
+      if (event.key === 'Enter') {
         lookup();
       }
 
@@ -897,4 +1078,3 @@ document
 
 </body>
 </html>
-```
