@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Southern Ontario Pre-Settlement Landcover Lookup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    margin: 0;
+    padding: 1rem;
+    max-width: 700px;
+    margin: auto;
+  }
+
+  h1 {
+    font-size: 1.3rem;
+  }
+
+  #searchRow {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+
+  #address {
+    flex: 1;
+    padding: 0.6rem;
+    font-size: 1rem;
+  }
+
+  button {
+    padding: 0.6rem 1rem;
+    font-size: 1rem;
+    cursor: pointer;
+  }
+
+  #status {
+    color: #666;
+    font-size: 0.9rem;
+    min-height: 1.2rem;
+  }
+
+  #result {
+    margin: 1rem 0;
+    padding: 1rem;
+    background: #f4f4f0;
+    border-radius: 8px;
+    display: none;
+  }
+
+  #result h2 {
+    margin-top: 0;
+  }
+
+  #result img {
+    max-width: 100%;
+    border-radius: 6px;
+    margin-top: 0.5rem;
+  }
+
+  #map {
+    height: 380px;
+    margin-top: 1rem;
+    border-radius: 8px;
+  }
+
+  .credit {
+    font-size: 0.75rem;
+    color: #888;
+  }
+</style>
+</head>
+
+<body>
+
+<h1>Southern Ontario — Pre-Settlement Landcover Lookup</h1>
+
+<p>
+  Type an address or coordinates (lat, lon) to see what ecosystem
+  existed there before European settlement.
+</p>
+
+<div id="searchRow">
+  <input
+    id="address"
+    placeholder="e.g. Stratford, ON or 43.37, -80.98"
+  />
+  <button onclick="lookup()">Search</button>
+</div>
+
+<div id="status"></div>
+
+<div id="result">
+  <h2 id="resultName"></h2>
+  <p id="resultCode"></p>
+  <p id="resultDesc"></p>
+  <img id="resultImg" style="display:none;"/>
+  <p class="credit" id="resultCredit"></p>
+</div>
+
+<div id="map"></div>
+
+<script>
+
+// ============================================================
+// MAP SETUP
+// ============================================================
+
+const map = L.map('map').setView([43.4, -80.9], 8);
+
+// CARTO Voyager basemap
+// This avoids directly using the OpenStreetMap tile server.
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+  attribution:
+    '&copy; OpenStreetMap contributors &copy; CARTO',
+  subdomains: 'abcd',
+  maxZoom: 20
+}).addTo(map);
+
+let marker = null;
+
+
+// ============================================================
+// LOAD LANDCOVER DATA ONCE
+// ============================================================
+
+let landcover = null;
+
+const statusEl = document.getElementById('status');
+
+statusEl.textContent = 'Loading landcover data...';
+
+fetch('landcover.geojson')
+  .then(r => {
+    if (!r.ok) {
+      throw new Error('Could not load landcover.geojson');
+    }
+
+    return r.json();
+  })
+  .then(data => {
+    landcover = data;
+
+    statusEl.textContent =
+      `Ready — ${data.features.length.toLocaleString()} polygons loaded.`;
+  })
+  .catch(err => {
+    statusEl.textContent =
+      'Error loading landcover data: ' + err.message;
+  });
+
+
+// ============================================================
+// TCODE LOOKUP TABLE
+// ============================================================
+
+const tcodeInfo = {
+
+  0: {
+    name: "Unknown",
+    desc: ""
+  },
+
+  1: {
+    name: "Maple/beech",
+    desc: "Dense hardwood forest dominated by sugar maple and American beech."
+  },
+
+  2: {
+    name: "Oak",
+    desc: "Oak-dominated upland forest."
+  },
+
+  3: {
+    name: "Black ash swamp",
+    desc: "Waterlogged lowland forest dominated by black ash."
+  },
+
+  4: {
+    name: "Tamarack swamp",
+    desc: "Wetland forest dominated by tamarack (eastern larch)."
+  },
+
+  5: {
+    name: "Beech/chestnut",
+    desc: "Mixed hardwood forest of beech and American chestnut (now functionally extinct)."
+  },
+
+  6: {
+    name: "Marsh",
+    desc: "Open wetland dominated by grasses, sedges, and emergent vegetation."
+  },
+
+  7: {
+    name: "Willow swamp",
+    desc: "Wetland shrub/forest dominated by willow species."
+  },
+
+  8: {
+    name: "Pine/cedar",
+    desc: "Mixed coniferous forest of pine and cedar."
+  },
+
+  9: {
+    name: "Meadow",
+    desc: "Open grassland or herbaceous plain."
+  },
+
+  10: {
+    name: "Pine",
+    desc: "Pine-dominated forest, likely white pine."
+  },
+
+  11: {
+    name: "Spruce swamp",
+    desc: "Wetland coniferous forest dominated by spruce."
+  },
+
+  12: {
+    name: "Cedar swamp",
+    desc: "Wetland forest dominated by eastern white cedar."
+  },
+
+  13: {
+    name: "Hemlock",
+    desc: "Forest dominated by eastern hemlock."
+  },
+
+  14: {
+    name: "Mixed coniferous",
+    desc: "Forest with multiple coniferous species."
+  },
+
+  15: {
+    name: "Cedar",
+    desc: "Upland forest dominated by eastern white cedar."
+  },
+
+  16: {
+    name: "Maple",
+    desc: "Forest dominated by maple species."
+  },
+
+  17: {
+    name: "Cedar/tamarack",
+    desc: "Mixed wetland forest of cedar and tamarack."
+  },
+
+  18: {
+    name: "Hemlock/cedar",
+    desc: "Mixed forest of hemlock and cedar."
+  },
+
+  19: {
+    name: "Pine/hemlock",
+    desc: "Mixed coniferous forest of pine and hemlock."
+  },
+
+  20: {
+    name: "Pine/chestnut/beech",
+    desc: "Mixed forest including now-extinct American chestnut."
+  },
+
+  21: {
+    name: "Pine/chestnut",
+    desc: "Mixed forest of pine and American chestnut."
+  },
+
+  22: {
+    name: "Cedar/black ash",
+    desc: "Mixed wetland forest of cedar and black ash."
+  },
+
+  23: {
+    name: "Beech",
+    desc: "Forest dominated by American beech."
+  },
+
+  25: {
+    name: "Hemlock/birch",
+    desc: "Mixed forest of hemlock and birch."
+  },
+
+  27: {
+    name: "Willow",
+    desc: "Willow-dominated wetland vegetation."
+  },
+
+  29: {
+    name: "Birch/maple swamp",
+    desc: "Wetland forest of birch and maple."
+  },
+
+  91: {
+    name: "Poplar",
+    desc: "Forest dominated by poplar/aspen species."
+  },
+
+  92: {
+    name: "Elm",
+    desc: "Elm-dominated forest (heavily impacted by Dutch elm disease historically)."
+  },
+
+  94: {
+    name: "Chestnut/mixed",
+    desc: "Mixed forest with American chestnut, now functionally extinct."
+  },
+
+  95: {
+    name: "Chestnut/mixed deciduous",
+    desc: "Mixed deciduous forest including chestnut."
+  },
+
+  96: {
+    name: "Chestnut",
+    desc: "Forest historically dominated by American chestnut."
+  },
+
+  97: {
+    name: "Maple/sycamore",
+    desc: "Mixed forest of maple and sycamore."
+  },
+
+  98: {
+    name: "Clearcut",
+    desc: "Historically cleared forest land."
+  },
+
+  99: {
+    name: "Mixed species",
+    desc: "Forest with a mix of tree species not otherwise classified."
+  },
+
+  100: {
+    name: "Improved land",
+    desc: "Land cleared and improved for agriculture at time of survey."
+  },
+
+  101: {
+    name: "Urban area",
+    desc: "Settled or urbanized land at time of survey."
+  },
+
+  102: {
+    name: "Unsurveyed",
+    desc: "No survey data available for this area."
+  },
+
+  103: {
+    name: "Unknown",
+    desc: "Classification unknown or unavailable."
+  },
+
+  104: {
+    name: "Deciduous mix",
+    desc: "General mixed deciduous forest."
+  },
+
+  105: {
+    name: "Burnt woods",
+    desc: "Forest area affected by fire at time of survey."
+  },
+
+  106: {
+    name: "Briar thicket",
+    desc: "Dense shrub/bramble vegetation."
+  },
+
+  107: {
+    name: "Swamp",
+    desc: "General wetland forest classification."
+  },
+
+  108: {
+    name: "Native cleared land",
+    desc: "Land cleared by Indigenous land use prior to European survey."
+  },
+
+  109: {
+    name: "Open plains",
+    desc: "Open grassland/prairie vegetation."
+  },
+
+  200: {
+    name: "Lake",
+    desc: "Open water body."
+  }
+
+};
+
+
+// ============================================================
+// SEARCH / LOOKUP LOGIC
+// ============================================================
+
+async function lookup() {
+
+  const input =
+    document.getElementById('address').value.trim();
+
+  if (!input) return;
+
+  document.getElementById('result').style.display = 'none';
+
+  statusEl.textContent = 'Searching...';
+
+  let lat;
+  let lon;
+
+
+  // ----------------------------------------------------------
+  // CHECK FOR COORDINATES
+  // ----------------------------------------------------------
+
+  const coordPattern =
+    /^(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)$/;
+
+  const match = input.match(coordPattern);
+
+
+  if (match) {
+
+    lat = parseFloat(match[1]);
+    lon = parseFloat(match[2]);
+
+  } else {
+
+    // --------------------------------------------------------
+    // ADDRESS LOOKUP USING NOMINATIM
+    // --------------------------------------------------------
+
+    try {
+
+      const url =
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(input)}&format=json&limit=1&countrycodes=ca`;
+
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        throw new Error(
+          `Nominatim request failed (${response.status})`
+        );
+      }
+
+      const data = await response.json();
+
+      if (!data.length) {
+
+        statusEl.textContent =
+          'Address not found. Try being more specific, or enter coordinates directly.';
+
+        return;
+      }
+
+      lat = parseFloat(data[0].lat);
+      lon = parseFloat(data[0].lon);
+
+    } catch (err) {
+
+      statusEl.textContent =
+        'Error looking up address: ' + err.message;
+
+      return;
+    }
+  }
+
+
+  // ----------------------------------------------------------
+  // UPDATE MAP
+  // ----------------------------------------------------------
+
+  map.setView([lat, lon], 12);
+
+  if (marker) {
+    map.removeLayer(marker);
+  }
+
+  marker = L.marker([lat, lon]).addTo(map);
+
+
+  // ----------------------------------------------------------
+  // CHECK LANDCOVER DATA
+  // ----------------------------------------------------------
+
+  if (!landcover) {
+
+    statusEl.textContent =
+      'Landcover data is still loading — try again in a moment.';
+
+    return;
+  }
+
+
+  // ----------------------------------------------------------
+  // POINT-IN-POLYGON LOOKUP
+  // ----------------------------------------------------------
+
+  const point =
+    turf.point([lon, lat]);
+
+  let found = null;
+
+
+  for (const feature of landcover.features) {
+
+    try {
+
+      if (
+        turf.booleanPointInPolygon(
+          point,
+          feature
+        )
+      ) {
+
+        found = feature.properties;
+        break;
+      }
+
+    } catch (e) {
+
+      // Skip malformed geometries silently
+      continue;
+    }
+  }
+
+
+  // ----------------------------------------------------------
+  // DISPLAY RESULT
+  // ----------------------------------------------------------
+
+  const resultDiv =
+    document.getElementById('result');
+
+  const nameEl =
+    document.getElementById('resultName');
+
+  const codeEl =
+    document.getElementById('resultCode');
+
+  const descEl =
+    document.getElementById('resultDesc');
+
+  const imgEl =
+    document.getElementById('resultImg');
+
+  const creditEl =
+    document.getElementById('resultCredit');
+
+
+  if (found) {
+
+    const tcode =
+      found.TCODE;
+
+    const info =
+      tcodeInfo[tcode] || {
+        name: found.TCode_Name || 'Unknown',
+        desc: ''
+      };
+
+
+    nameEl.textContent =
+      info.name;
+
+    codeEl.textContent =
+      `TCODE: ${tcode}`;
+
+    descEl.textContent =
+      info.desc || '';
+
+
+    if (info.photo) {
+
+      imgEl.src =
+        info.photo;
+
+      imgEl.style.display =
+        'block';
+
+      creditEl.textContent =
+        info.credit || '';
+
+    } else {
+
+      imgEl.style.display =
+        'none';
+
+      creditEl.textContent =
+        '';
+    }
+
+
+    resultDiv.style.display =
+      'block';
+
+    statusEl.textContent =
+      '';
+
+  } else {
+
+    statusEl.textContent =
+      'No pre-settlement landcover data found for this location (it may be outside the mapped area).';
+  }
+}
+
+
+// ============================================================
+// ENTER KEY SUPPORT
+// ============================================================
+
+document
+  .getElementById('address')
+  .addEventListener('keydown', function(e) {
+
+    if (e.key === 'Enter') {
+      lookup();
+    }
+
+  });
+
+</script>
+
+</body>
+</html>
