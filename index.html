@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -147,6 +148,29 @@
     font-weight: 600;
     margin-bottom: 5px;
   }
+
+  /* Coverage polygon hover effect */
+  .coverage-hover {
+    color: #1b5e20;
+    weight: 2;
+    fillOpacity: 0.32;
+  }
+
+  /* Popup */
+  .landcover-popup h3 {
+    margin: 0 0 5px 0;
+    font-size: 1.05rem;
+  }
+
+  .landcover-popup .tcode {
+    color: #666;
+    font-size: 0.85rem;
+  }
+
+  .landcover-popup p {
+    margin: 7px 0 0 0;
+    line-height: 1.35;
+  }
 </style>
 </head>
 
@@ -181,7 +205,7 @@
   <p class="credit" id="resultCredit"></p>
 </div>
 
-<!-- Coverage information box -->
+<!-- Coverage information -->
 <div id="coverageBox">
 
   <h2>Data Coverage</h2>
@@ -197,7 +221,7 @@
 
   <p class="coverageNote">
     Unknown and unsurveyed areas are excluded.
-    Areas without data remain as gaps in the coverage.
+    Click a green area on the map to see its landcover classification.
   </p>
 
 </div>
@@ -210,29 +234,44 @@
 // MAP SETUP
 // ============================================================
 
-const map = L.map('map').setView([43.4, -80.9], 8);
+const map =
+  L.map('map')
+   .setView([43.4, -80.9], 8);
+
 
 // CARTO Voyager basemap.
-// This avoids directly using the OSM tile server.
+//
+// This avoids directly requesting tiles from the
+// OpenStreetMap tile server.
+
 L.tileLayer(
   'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
   {
-    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-    subdomains: 'abcd',
-    maxZoom: 20
+    attribution:
+      '&copy; OpenStreetMap contributors &copy; CARTO',
+
+    subdomains:
+      'abcd',
+
+    maxZoom:
+      20
   }
 ).addTo(map);
 
-let marker = null;
+
+let marker =
+  null;
 
 
 // ============================================================
-// COVERAGE LAYER
+// COVERAGE VARIABLES
 // ============================================================
 
-let coverageLayer = null;
+let coverageLayer =
+  null;
 
-let coverageReady = false;
+let coverageReady =
+  false;
 
 
 // ============================================================
@@ -253,54 +292,62 @@ const searchButton =
 
 
 // ============================================================
-// TCODES THAT ARE EXCLUDED FROM COVERAGE
+// TCODES EXCLUDED FROM COVERAGE
 // ============================================================
-//
-// These do NOT count as usable historical landcover data.
 //
 // 0   = Unknown
 // 102 = Unsurveyed
 // 103 = Unknown
 //
-// Everything else is treated as usable data.
+// All other TCODEs are considered usable.
 // ============================================================
 
-const excludedTCodes = new Set([
-  0,
-  102,
-  103
-]);
+const excludedTCodes =
+  new Set([
+    0,
+    102,
+    103
+  ]);
 
 
 // ============================================================
 // LOAD LANDCOVER DATA
 // ============================================================
 
-let landcover = null;
+let landcover =
+  null;
+
 
 fetch('landcover.geojson')
 
   .then(response => {
 
     if (!response.ok) {
+
       throw new Error(
         `Could not load landcover.geojson (${response.status})`
       );
+
     }
 
     return response.json();
+
   })
 
   .then(data => {
 
-    landcover = data;
+    landcover =
+      data;
+
 
     statusEl.textContent =
       `Ready — ${data.features.length.toLocaleString()} polygons loaded.`;
 
-    searchButton.disabled = false;
 
-    // Build coverage without dissolving the entire dataset.
+    searchButton.disabled =
+      false;
+
+
     buildCoverageLayer();
 
   })
@@ -309,8 +356,11 @@ fetch('landcover.geojson')
 
     console.error(error);
 
+
     statusEl.textContent =
-      'Error loading landcover data: ' + error.message;
+      'Error loading landcover data: ' +
+      error.message;
+
 
     coverageStatus.textContent =
       'Coverage information could not be loaded.';
@@ -322,87 +372,244 @@ fetch('landcover.geojson')
 // BUILD COVERAGE LAYER
 // ============================================================
 //
-// IMPORTANT:
+// We deliberately DO NOT use turf.dissolve().
 //
-// We do NOT use turf.dissolve() here.
+// The original polygons are displayed directly.
+// This is much more suitable for a large GeoJSON.
 //
-// Every usable polygon is simply placed into a Leaflet layer.
-// This is much safer for a large 8 MB GeoJSON file.
-//
-// Since polygons with TCODE 0, 102 and 103 are not included,
-// areas represented by those polygons remain empty.
+// Because excluded TCODEs aren't added, areas with no data
+// remain empty.
 //
 // ============================================================
 
 function buildCoverageLayer() {
 
-  if (!landcover || !landcover.features) {
+  if (
+    !landcover ||
+    !landcover.features
+  ) {
+
     return;
+
   }
+
 
   coverageStatus.textContent =
     'Preparing coverage...';
 
 
-  // Create a FeatureCollection containing only usable polygons.
-
   const usableFeatures =
-    landcover.features.filter(feature => {
+    landcover.features.filter(
+      feature => {
 
-      if (!feature.properties) {
-        return false;
-      }
+        if (
+          !feature.properties
+        ) {
 
-      const rawTCODE =
-        feature.properties.TCODE;
+          return false;
 
-      if (
-        rawTCODE === undefined ||
-        rawTCODE === null ||
-        rawTCODE === ''
-      ) {
-        return false;
-      }
-
-      const tcode =
-        Number(rawTCODE);
-
-      return !excludedTCodes.has(tcode);
-    });
+        }
 
 
-  // Create the Leaflet coverage layer.
+        const rawTCODE =
+          feature.properties.TCODE;
 
-  coverageLayer =
-    L.geoJSON(
-      {
-        type: 'FeatureCollection',
-        features: usableFeatures
-      },
-      {
 
-        style: {
-          color: '#2d7d32',
-          weight: 1,
-          opacity: 0.65,
-          fillColor: '#4caf50',
-          fillOpacity: 0.18
-        },
+        if (
+          rawTCODE === undefined ||
+          rawTCODE === null ||
+          rawTCODE === ''
+        ) {
 
-        interactive: false
+          return false;
+
+        }
+
+
+        const tcode =
+          Number(rawTCODE);
+
+
+        return !excludedTCodes.has(
+          tcode
+        );
 
       }
     );
 
 
-  coverageReady = true;
+  // ----------------------------------------------------------
+  // CREATE LEAFLET COVERAGE LAYER
+  // ----------------------------------------------------------
+
+  coverageLayer =
+    L.geoJSON(
+
+      {
+        type:
+          'FeatureCollection',
+
+        features:
+          usableFeatures
+      },
+
+      {
+
+        style:
+          function(feature) {
+
+            return {
+
+              color:
+                '#2d7d32',
+
+              weight:
+                1,
+
+              opacity:
+                0.65,
+
+              fillColor:
+                '#4caf50',
+
+              fillOpacity:
+                0.18
+
+            };
+
+          },
+
+
+        // ----------------------------------------------------
+        // CLICKABLE FEATURES
+        // ----------------------------------------------------
+
+        onEachFeature:
+          function(feature, layer) {
+
+            const properties =
+              feature.properties ||
+              {};
+
+
+            const tcode =
+              Number(
+                properties.TCODE
+              );
+
+
+            const info =
+              tcodeInfo[tcode] || {
+
+                name:
+                  properties.TCode_Name ||
+                  'Unknown',
+
+                desc:
+                  ''
+
+              };
+
+
+            // Create safe-ish display text.
+            //
+            // textContent would be safer for arbitrary data,
+            // but popup content here is controlled by the
+            // tcodeInfo table for the known classifications.
+
+            const popupHTML = `
+
+              <div class="landcover-popup">
+
+                <h3>
+                  ${info.name}
+                </h3>
+
+                <div class="tcode">
+                  TCODE: ${tcode}
+                </div>
+
+                ${
+                  info.desc
+                    ? `<p>${info.desc}</p>`
+                    : ''
+                }
+
+              </div>
+
+            `;
+
+
+            layer.bindPopup(
+              popupHTML
+            );
+
+
+            // ------------------------------------------------
+            // HOVER EFFECT
+            // ------------------------------------------------
+
+            layer.on({
+
+              mouseover:
+                function(event) {
+
+                  const target =
+                    event.target;
+
+
+                  target.setStyle({
+
+                    color:
+                      '#1b5e20',
+
+                    weight:
+                      2,
+
+                    fillOpacity:
+                      0.32
+
+                  });
+
+
+                  if (
+                    !L.Browser.ie &&
+                    !L.Browser.opera &&
+                    !L.Browser.edge
+                  ) {
+
+                    target.bringToFront();
+
+                  }
+
+                },
+
+
+              mouseout:
+                function(event) {
+
+                  coverageLayer.resetStyle(
+                    event.target
+                  );
+
+                }
+
+            });
+
+          }
+
+      }
+
+    );
+
+
+  coverageReady =
+    true;
 
 
   coverageStatus.textContent =
     `${usableFeatures.length.toLocaleString()} polygons contain usable historical landcover data.`;
 
-
-  // Add the coverage control to the map.
 
   addCoverageControl();
 
@@ -419,75 +626,87 @@ function addCoverageControl() {
     L.Control.extend({
 
       options: {
-        position: 'topright'
+        position:
+          'topright'
       },
 
-      onAdd: function(map) {
 
-        const container =
-          L.DomUtil.create(
-            'div',
-            'coverage-control'
+      onAdd:
+        function(map) {
+
+          const container =
+            L.DomUtil.create(
+              'div',
+              'coverage-control'
+            );
+
+
+          container.innerHTML = `
+
+            <div class="coverage-control-title">
+              Data Coverage
+            </div>
+
+            <label>
+
+              <input
+                type="checkbox"
+                id="coverageCheckbox"
+              >
+
+              Show coverage
+
+            </label>
+
+          `;
+
+
+          L.DomEvent.disableClickPropagation(
+            container
           );
 
 
-        container.innerHTML = `
-
-          <div class="coverage-control-title">
-            Data Coverage
-          </div>
-
-          <label>
-            <input
-              type="checkbox"
-              id="coverageCheckbox"
-            >
-            Show coverage
-          </label>
-
-        `;
+          const checkbox =
+            container.querySelector(
+              '#coverageCheckbox'
+            );
 
 
-        // Prevent clicks inside the control from
-        // interacting with the map.
+          checkbox.addEventListener(
+            'change',
+            function() {
 
-        L.DomEvent.disableClickPropagation(container);
+              if (!coverageReady) {
+
+                checkbox.checked =
+                  false;
+
+                return;
+
+              }
 
 
-        const checkbox =
-          container.querySelector(
-            '#coverageCheckbox'
+              if (
+                checkbox.checked
+              ) {
+
+                showCoverage();
+
+              }
+
+              else {
+
+                hideCoverage();
+
+              }
+
+            }
           );
 
 
-        checkbox.addEventListener(
-          'change',
-          function() {
+          return container;
 
-            if (!coverageReady) {
-
-              checkbox.checked = false;
-
-              return;
-            }
-
-
-            if (checkbox.checked) {
-
-              showCoverage();
-
-            } else {
-
-              hideCoverage();
-
-            }
-
-          }
-        );
-
-
-        return container;
-      }
+        }
 
     });
 
@@ -509,7 +728,11 @@ function showCoverage() {
     return;
   }
 
-  coverageLayer.addTo(map);
+
+  coverageLayer.addTo(
+    map
+  );
+
 
   coverageBox.style.display =
     'block';
@@ -527,9 +750,19 @@ function hideCoverage() {
     return;
   }
 
-  if (map.hasLayer(coverageLayer)) {
-    map.removeLayer(coverageLayer);
+
+  if (
+    map.hasLayer(
+      coverageLayer
+    )
+  ) {
+
+    map.removeLayer(
+      coverageLayer
+    );
+
   }
+
 
   coverageBox.style.display =
     'none';
@@ -777,7 +1010,7 @@ const tcodeInfo = {
 
 
 // ============================================================
-// LOOKUP FUNCTION
+// ADDRESS / COORDINATE LOOKUP
 // ============================================================
 
 async function lookup() {
@@ -799,11 +1032,14 @@ async function lookup() {
       'Landcover data is still loading — please wait.';
 
     return;
+
   }
 
 
   document.getElementById('result')
-    .style.display = 'none';
+    .style.display =
+      'none';
+
 
   statusEl.textContent =
     'Searching...';
@@ -814,31 +1050,40 @@ async function lookup() {
 
 
   // ----------------------------------------------------------
-  // COORDINATE INPUT
+  // COORDINATES
   // ----------------------------------------------------------
 
   const coordPattern =
     /^(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)$/;
 
+
   const match =
-    input.match(coordPattern);
+    input.match(
+      coordPattern
+    );
 
 
   if (match) {
 
     lat =
-      parseFloat(match[1]);
+      parseFloat(
+        match[1]
+      );
+
 
     lon =
-      parseFloat(match[2]);
+      parseFloat(
+        match[2]
+      );
 
   }
 
-  else {
 
-    // --------------------------------------------------------
-    // ADDRESS SEARCH
-    // --------------------------------------------------------
+  // ----------------------------------------------------------
+  // ADDRESS
+  // ----------------------------------------------------------
+
+  else {
 
     try {
 
@@ -847,7 +1092,9 @@ async function lookup() {
 
 
       const response =
-        await fetch(url);
+        await fetch(
+          url
+        );
 
 
       if (!response.ok) {
@@ -869,14 +1116,20 @@ async function lookup() {
           'Address not found. Try being more specific, or enter coordinates directly.';
 
         return;
+
       }
 
 
       lat =
-        parseFloat(data[0].lat);
+        parseFloat(
+          data[0].lat
+        );
+
 
       lon =
-        parseFloat(data[0].lon);
+        parseFloat(
+          data[0].lon
+        );
 
     }
 
@@ -887,6 +1140,7 @@ async function lookup() {
         error.message;
 
       return;
+
     }
 
   }
@@ -903,14 +1157,19 @@ async function lookup() {
 
 
   if (marker) {
-    map.removeLayer(marker);
+
+    map.removeLayer(
+      marker
+    );
+
   }
 
 
   marker =
     L.marker(
       [lat, lon]
-    ).addTo(map);
+    )
+    .addTo(map);
 
 
   // ----------------------------------------------------------
@@ -945,6 +1204,7 @@ async function lookup() {
           feature.properties;
 
         break;
+
       }
 
     }
@@ -952,6 +1212,7 @@ async function lookup() {
     catch (error) {
 
       // Ignore malformed geometries.
+
       continue;
 
     }
@@ -964,28 +1225,47 @@ async function lookup() {
   // ----------------------------------------------------------
 
   const resultDiv =
-    document.getElementById('result');
+    document.getElementById(
+      'result'
+    );
+
 
   const nameEl =
-    document.getElementById('resultName');
+    document.getElementById(
+      'resultName'
+    );
+
 
   const codeEl =
-    document.getElementById('resultCode');
+    document.getElementById(
+      'resultCode'
+    );
+
 
   const descEl =
-    document.getElementById('resultDesc');
+    document.getElementById(
+      'resultDesc'
+    );
+
 
   const imgEl =
-    document.getElementById('resultImg');
+    document.getElementById(
+      'resultImg'
+    );
+
 
   const creditEl =
-    document.getElementById('resultCredit');
+    document.getElementById(
+      'resultCredit'
+    );
 
 
   if (found) {
 
     const tcode =
-      Number(found.TCODE);
+      Number(
+        found.TCODE
+      );
 
 
     const info =
@@ -995,7 +1275,8 @@ async function lookup() {
           found.TCode_Name ||
           'Unknown',
 
-        desc: ''
+        desc:
+          ''
 
       };
 
@@ -1058,7 +1339,7 @@ async function lookup() {
 
 
 // ============================================================
-// ENTER KEY
+// ENTER KEY SUPPORT
 // ============================================================
 
 document
@@ -1067,8 +1348,12 @@ document
     'keydown',
     function(event) {
 
-      if (event.key === 'Enter') {
+      if (
+        event.key === 'Enter'
+      ) {
+
         lookup();
+
       }
 
     }
@@ -1078,3 +1363,17 @@ document
 
 </body>
 </html>
+```
+
+### What changed
+
+The **Data Coverage → Show coverage** layer is now interactive.
+
+When it's turned on:
+
+* 🟢 **Click a green polygon** → popup with its landcover type, TCODE, and description.
+* 🖱️ **Hover over a polygon** → it becomes slightly darker/thicker.
+* ⬜ **Unknown/Unsurveyed areas** aren't part of the layer, so they remain uncovered.
+* 🔍 Your normal address/coordinate search still works independently.
+
+One caveat: because the 8 MB file is being displayed as its original polygons, clicking a very tiny polygon can sometimes require zooming in. That's preferable here to doing a huge dissolve operation on every page load.
